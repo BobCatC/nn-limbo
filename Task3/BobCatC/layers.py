@@ -128,9 +128,13 @@ class ReLULayer:
         # ReLU Doesn't have any parameters
         return {}
 
+    def name(self):
+        return "ReLU"
+
 
 class FullyConnectedLayer:
     def __init__(self, n_input, n_output):
+        self.n_output = n_output
         self.W = Param(0.001 * np.random.randn(n_input, n_output))
         self.B = Param(0.001 * np.random.randn(1, n_output))
         self.X = None
@@ -171,6 +175,9 @@ class FullyConnectedLayer:
     def params(self):
         return {'W': self.W, 'B': self.B}
 
+    def name(self):
+        return "FC-{}".format(self.n_output)
+
     
 class ConvolutionalLayer:
     def __init__(self, in_channels, out_channels,
@@ -201,20 +208,29 @@ class ConvolutionalLayer:
     def forward(self, X):
         batch_size, height, width, channels = X.shape
 
-        out_height = 0
-        out_width = 0
-        
-        # TODO: Implement forward pass
-        # Hint: setup variables that hold the result
-        # and one x/y location at a time in the loop below
-        
-        # It's ok to use loops for going over width and height
-        # but try to avoid having any other loops
+        out_height = height - (self.filter_size - 1) + 2 * self.padding
+        out_width = width - (self.filter_size - 1) + 2 * self.padding
+
+        x_transformed = np.zeros((batch_size, height + 2 * self.padding, width + 2 * self.padding, channels))
+        x_transformed[:, self.padding: height + self.padding, self.padding: width + self.padding, :] = X
+
+        self.X = X, x_transformed
+
+        output = np.zeros((batch_size, out_height, out_width, self.out_channels))
+
         for y in range(out_height):
             for x in range(out_width):
-                # TODO: Implement forward pass for specific location
-                pass
-        raise Exception("Not implemented!")
+                x_window = x_transformed[
+                           :,
+                           y: y + self.filter_size,
+                           x: x + self.filter_size,
+                           :,
+                           np.newaxis
+                        ]
+
+                output[:, y, x, :] = np.sum(x_window * self.W.value, axis=(1, 2, 3)) + self.B.value
+
+        return output
 
 
     def backward(self, d_out):
@@ -223,26 +239,32 @@ class ConvolutionalLayer:
         # when you implemented FullyConnectedLayer
         # Just do it the same number of times and accumulate gradients
 
+        X, X_with_padding = self.X
+
         batch_size, height, width, channels = X.shape
         _, out_height, out_width, out_channels = d_out.shape
 
-        # TODO: Implement backward pass
-        # Same as forward, setup variables of the right shape that
-        # aggregate input gradient and fill them for every location
-        # of the output
+        X_grad = np.zeros(X_with_padding.shape)
 
         # Try to avoid having any other loops here too
         for y in range(out_height):
             for x in range(out_width):
-                # TODO: Implement backward pass for specific location
-                # Aggregate gradients for both the input and
-                # the parameters (W and B)
-                pass
+                window = X_with_padding[:, y:y + self.filter_size, x:x + self.filter_size, :, np.newaxis]
+                grad = d_out[:, y, x, np.newaxis, np.newaxis, np.newaxis, :]
+                # print((grad*window).shape, self.W.grad.shape)
+                # print(np.sum(grad * window, axis=0))
+                self.W.grad += np.sum(grad * window, axis=0)
+                # pass
+                X_grad[:, y:y + self.filter_size, x:x + self.filter_size, :] += np.sum(self.W.value * grad, axis=4)
+        self.B.grad += np.sum(d_out, axis=(0, 1, 2))
 
-        raise Exception("Not implemented!")
+        return X_grad[:, self.padding:height + self.padding, self.padding:width + self.padding, :]
 
     def params(self):
         return { 'W': self.W, 'B': self.B }
+
+    def name(self):
+        return "Conv{}x{}-{}".format(self.filter_size, self.filter_size, self.out_channels)
 
 
 class MaxPoolingLayer:
@@ -260,18 +282,51 @@ class MaxPoolingLayer:
 
     def forward(self, X):
         batch_size, height, width, channels = X.shape
-        # TODO: Implement maxpool forward pass
-        # Hint: Similarly to Conv layer, loop on
-        # output x/y dimension
-        raise Exception("Not implemented!")
+        out_height = (height - self.pool_size) // self.stride + 1
+        out_width = (width - self.pool_size) // self.stride + 1
+
+        output = np.zeros((batch_size, out_height, out_width, channels))
+
+        self.X = X
+
+        for y in range(out_height):
+            for x in range(out_width):
+                x_window = X[
+                           :,
+                           y: y + self.pool_size,
+                           x: x + self.pool_size,
+                           :
+                        ]
+
+                output[:, y, x, :] = np.max(x_window, axis=(1, 2))
+
+        return output
+
 
     def backward(self, d_out):
         # TODO: Implement maxpool backward pass
         batch_size, height, width, channels = self.X.shape
-        raise Exception("Not implemented!")
+        out_height = (height - self.pool_size) // self.stride + 1
+        out_width = (width - self.pool_size) // self.stride + 1
+
+        output = np.zeros(self.X.shape)
+
+        for y in range(out_height):
+            for x in range(out_width):
+                x_window = self.X[:, y:y + self.pool_size, x:x + self.pool_size, :]
+                dx = (d_out[:, y, x, :])[:, np.newaxis, np.newaxis, :]
+
+                max_el = (x_window == np.max(x_window, axis=(1, 2))[:, np.newaxis, np.newaxis, :])
+
+                output[:, y: y + self.pool_size, x: x + self.pool_size, :] += dx * max_el
+
+        return output
 
     def params(self):
         return {}
+
+    def name(self):
+        return "MaxPooling{}x{}".format(self.pool_size, self.stride)
 
 
 class Flattener:
@@ -281,15 +336,15 @@ class Flattener:
     def forward(self, X):
         batch_size, height, width, channels = X.shape
 
-        # TODO: Implement forward pass
-        # Layer should return array with dimensions
-        # [batch_size, hight*width*channels]
-        raise Exception("Not implemented!")
+        self.X_shape = X.shape
+        return X.reshape(batch_size, height * width * channels)
 
     def backward(self, d_out):
-        # TODO: Implement backward pass
-        raise Exception("Not implemented!")
+        return d_out.reshape(self.X_shape)
 
     def params(self):
         # No params!
         return {}
+
+    def name(self):
+        return "Flatten"
